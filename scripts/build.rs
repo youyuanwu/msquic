@@ -2,14 +2,16 @@
 // Licensed under the MIT License.
 
 use cmake::Config;
-use std::path::Path;
 use std::env;
+use std::path::Path;
 
 fn main() {
     let path_extra = "lib";
     let mut logging_enabled = "off";
+    let mut tls = "openssl";
     if cfg!(windows) {
         logging_enabled = "on";
+        tls = "schannel";
     }
 
     let target = env::var("TARGET").unwrap();
@@ -18,7 +20,7 @@ fn main() {
     let mut config = Config::new(".");
     config
         .define("QUIC_ENABLE_LOGGING", logging_enabled)
-        .define("QUIC_TLS", "openssl")
+        .define("QUIC_TLS", tls)
         .define("QUIC_OUTPUT_DIR", "../lib");
 
     // macos-latest's cargo automatically specify --target=${ARCH}-apple-macosx14.5
@@ -32,7 +34,7 @@ fn main() {
         "aarch64-apple-darwin" => config
             .define("CMAKE_OSX_ARCHITECTURES", "arm64")
             .define("CMAKE_OSX_DEPLOYMENT_TARGET", "14.5"),
-        _ => &mut config
+        _ => &mut config,
     };
 
     let dst = config.build();
