@@ -24,6 +24,7 @@ use std::sync::Once;
 #[macro_use]
 extern crate bitfield;
 pub mod ffi;
+mod settings;
 
 //
 // The following starts the C interop layer of MsQuic API.
