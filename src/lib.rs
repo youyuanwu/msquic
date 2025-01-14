@@ -811,9 +811,6 @@ pub struct ListenerEvent {
     pub payload: ListenerEventPayload,
 }
 
-pub type ListenerEventHandler =
-    extern "C" fn(listener: Handle, context: *mut c_void, event: &ListenerEvent) -> u32;
-
 pub type ConnectionEventType = u32;
 pub const CONNECTION_EVENT_CONNECTED: ConnectionEventType = 0;
 pub const CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT: ConnectionEventType = 1;
@@ -980,9 +977,6 @@ pub struct ConnectionEvent {
     pub event_type: ConnectionEventType,
     pub payload: ConnectionEventPayload,
 }
-
-pub type ConnectionEventHandler =
-    unsafe extern "C" fn(connection: Handle, context: *mut c_void, event: &ConnectionEvent) -> u32;
 
 pub type StreamEventType = u32;
 pub const STREAM_EVENT_START_COMPLETE: StreamEventType = 0;
@@ -1301,6 +1295,19 @@ impl Api {
         Error::ok_from_raw(status)
     }
 
+    /// # Safety
+    /// buffer needs to be valid.
+    pub unsafe fn set_param(
+        handle: HQUIC,
+        param: u32,
+        buffer_length: u32,
+        buffer: *const c_void,
+    ) -> Result<(), Error> {
+        let status =
+            unsafe { Api::ffi_ref().SetParam.unwrap()(handle, param, buffer_length, buffer) };
+        Error::ok_from_raw(status)
+    }
+
     pub fn get_perf(&self) -> Result<QuicPerformance, Error> {
         let mut perf = QuicPerformance {
             counters: [0; PERF_COUNTER_MAX as usize],
@@ -1473,18 +1480,18 @@ impl Connection {
         Connection { handle }
     }
 
+    /// TODO: The handler type should eventually be changed to Fn type.
+    /// ffi type and the context ptr makes this function unsafe.
     pub fn open(
         &mut self,
         registration: &Registration,
-        handler: ConnectionEventHandler,
+        handler: ffi::QUIC_CONNECTION_CALLBACK_HANDLER,
         context: *const c_void,
     ) -> Result<(), Error> {
-        // TODO: remove transmute.
-        #[allow(clippy::missing_transmute_annotations)]
         let status = unsafe {
             Api::ffi_ref().ConnectionOpen.unwrap()(
                 registration.handle,
-                Some(std::mem::transmute(handler)),
+                handler,
                 context as *mut c_void,
                 std::ptr::addr_of_mut!(self.handle),
             )
@@ -1511,12 +1518,12 @@ impl Connection {
         Error::ok_from_raw(status)
     }
 
-    // TODO: remove ref?
-    pub fn close(&self) {
+    pub fn close(&mut self) {
         if !self.handle.is_null() {
             unsafe {
                 Api::ffi_ref().ConnectionClose.unwrap()(self.handle);
             }
+            self.handle = std::ptr::null_mut();
         }
     }
 
@@ -1524,15 +1531,6 @@ impl Connection {
         unsafe {
             Api::ffi_ref().ConnectionShutdown.unwrap()(self.handle, flags as i32, error_code);
         }
-    }
-
-    /// # Safety
-    /// buffer needs to be valid.
-    pub unsafe fn set_param(&self, param: u32, buffer_length: u32, buffer: *const c_void) -> u32 {
-        unsafe {
-            Api::ffi_ref().SetParam.unwrap()(self.handle, param, buffer_length, buffer) as u32
-        }
-        // TODO: error handling
     }
 
     pub fn stream_close(&self, stream: Handle) {
@@ -1585,14 +1583,23 @@ impl Connection {
     /// handler and context must be valid
     pub unsafe fn set_callback_handler(
         &self,
-        handler: ConnectionEventHandler,
+        handler: ffi::QUIC_CONNECTION_CALLBACK_HANDLER,
         context: *const c_void,
     ) {
-        unsafe { Api::set_callback_handler(self.handle, handler as *const c_void, context) };
+        unsafe {
+            Api::set_callback_handler(
+                self.handle,
+                std::mem::transmute::<ffi::QUIC_CONNECTION_CALLBACK_HANDLER, *const c_void>(
+                    handler,
+                ),
+                context,
+            )
+        };
     }
 
     /// # Safety
     /// handler and context must be valid
+    /// TODO: handler needs to be Fn type.
     pub unsafe fn set_stream_callback_handler(
         &self,
         stream_handle: HQUIC,
@@ -1674,9 +1681,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe { Api::ffi_ref().ConnectionClose.unwrap()(self.handle) };
-        }
+        self.close();
     }
 }
 
@@ -1693,18 +1698,17 @@ impl Listener {
         }
     }
 
+    /// TODO: handler should be changed to Fn type.
     pub fn open(
         &mut self,
         registration: &Registration,
-        handler: ListenerEventHandler,
+        handler: ffi::QUIC_LISTENER_CALLBACK_HANDLER,
         context: *const c_void,
     ) -> Result<(), Error> {
-        // TODO: remove transmute.
-        #[allow(clippy::missing_transmute_annotations)]
         let status = unsafe {
             Api::ffi_ref().ListenerOpen.unwrap()(
                 registration.handle,
-                Some(std::mem::transmute(handler)),
+                handler,
                 context as *mut c_void,
                 std::ptr::addr_of_mut!(self.handle),
             )
@@ -1857,135 +1861,151 @@ impl Drop for Stream {
     }
 }
 
-//
-// The following defines some simple test code.
-//
+#[cfg(test)]
+mod tests {
 
-#[allow(dead_code)] // Used in test code
-extern "C" fn test_conn_callback(
-    _connection: Handle,
-    context: *mut c_void,
-    event: &ConnectionEvent,
-) -> u32 {
-    let connection = unsafe { &*(context as *const Connection) };
-    match event.event_type {
-        CONNECTION_EVENT_CONNECTED => {
-            let local_addr = connection.get_local_addr().unwrap().as_socket().unwrap();
-            let remote_addr = connection.get_remote_addr().unwrap().as_socket().unwrap();
-            println!("Connected({}, {})", local_addr, remote_addr);
-        }
-        CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT => {
-            println!("Transport shutdown 0x{:x}", unsafe {
-                event.payload.shutdown_initiated_by_transport.status
-            })
-        }
-        CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER => println!("App shutdown {}", unsafe {
-            event.payload.shutdown_initiated_by_peer.error_code
-        }),
-        CONNECTION_EVENT_SHUTDOWN_COMPLETE => println!("Shutdown complete"),
-        CONNECTION_EVENT_PEER_STREAM_STARTED => {
-            println!("Peer stream started");
-            unsafe {
-                connection.set_stream_callback_handler(
-                    event.payload.peer_stream_started.stream as HQUIC,
-                    test_stream_callback,
-                    context,
-                );
+    //
+    // The following defines some simple test code.
+    //
+
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use crate::ffi::{HQUIC, QUIC_ERROR};
+    use crate::{
+        ffi, Buffer, Configuration, Connection, ConnectionEvent, CredentialConfig, Handle,
+        Registration, Settings, StreamEvent,
+    };
+
+    extern "C" fn test_conn_callback(
+        _connection: HQUIC,
+        context: *mut c_void,
+        event: *mut ffi::QUIC_CONNECTION_EVENT,
+    ) -> QUIC_ERROR {
+        let connection = unsafe { &*(context as *const Connection) };
+        let event = unsafe { (event as *const ConnectionEvent).as_ref().unwrap() };
+        match event.event_type {
+            crate::CONNECTION_EVENT_CONNECTED => {
+                let local_addr = connection.get_local_addr().unwrap().as_socket().unwrap();
+                let remote_addr = connection.get_remote_addr().unwrap().as_socket().unwrap();
+                println!("Connected({}, {})", local_addr, remote_addr);
             }
+            crate::CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT => {
+                println!("Transport shutdown 0x{:x}", unsafe {
+                    event.payload.shutdown_initiated_by_transport.status
+                })
+            }
+            crate::CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER => {
+                println!("App shutdown {}", unsafe {
+                    event.payload.shutdown_initiated_by_peer.error_code
+                })
+            }
+            crate::CONNECTION_EVENT_SHUTDOWN_COMPLETE => println!("Shutdown complete"),
+            crate::CONNECTION_EVENT_PEER_STREAM_STARTED => {
+                println!("Peer stream started");
+                unsafe {
+                    connection.set_stream_callback_handler(
+                        event.payload.peer_stream_started.stream as HQUIC,
+                        test_stream_callback,
+                        context,
+                    );
+                }
+            }
+            _ => println!("Other callback {}", event.event_type),
         }
-        _ => println!("Other callback {}", event.event_type),
+        0
     }
-    0
-}
 
-#[allow(dead_code)] // Used in test code
-extern "C" fn test_stream_callback(
-    stream: Handle,
-    context: *mut c_void,
-    event: &StreamEvent,
-) -> u32 {
-    let connection = unsafe { &*(context as *const Connection) };
-    match event.event_type {
-        STREAM_EVENT_START_COMPLETE => println!("Stream start complete 0x{:x}", unsafe {
-            event.payload.start_complete.status
-        }),
-        STREAM_EVENT_RECEIVE => println!("Receive {} bytes", unsafe {
-            event.payload.receive.total_buffer_length
-        }),
-        STREAM_EVENT_SEND_COMPLETE => println!("Send complete"),
-        STREAM_EVENT_PEER_SEND_SHUTDOWN => println!("Peer send shutdown"),
-        STREAM_EVENT_PEER_SEND_ABORTED => println!("Peer send aborted"),
-        STREAM_EVENT_PEER_RECEIVE_ABORTED => println!("Peer receive aborted"),
-        STREAM_EVENT_SEND_SHUTDOWN_COMPLETE => println!("Peer receive aborted"),
-        STREAM_EVENT_SHUTDOWN_COMPLETE => {
-            println!("Stream shutdown complete");
-            connection.stream_close(stream);
+    extern "C" fn test_stream_callback(
+        stream: Handle,
+        context: *mut c_void,
+        event: &StreamEvent,
+    ) -> u32 {
+        let connection = unsafe { &*(context as *const Connection) };
+        match event.event_type {
+            crate::STREAM_EVENT_START_COMPLETE => {
+                println!("Stream start complete 0x{:x}", unsafe {
+                    event.payload.start_complete.status
+                })
+            }
+            crate::STREAM_EVENT_RECEIVE => println!("Receive {} bytes", unsafe {
+                event.payload.receive.total_buffer_length
+            }),
+            crate::STREAM_EVENT_SEND_COMPLETE => println!("Send complete"),
+            crate::STREAM_EVENT_PEER_SEND_SHUTDOWN => println!("Peer send shutdown"),
+            crate::STREAM_EVENT_PEER_SEND_ABORTED => println!("Peer send aborted"),
+            crate::STREAM_EVENT_PEER_RECEIVE_ABORTED => println!("Peer receive aborted"),
+            crate::STREAM_EVENT_SEND_SHUTDOWN_COMPLETE => println!("Peer receive aborted"),
+            crate::STREAM_EVENT_SHUTDOWN_COMPLETE => {
+                println!("Stream shutdown complete");
+                connection.stream_close(stream);
+            }
+            crate::STREAM_EVENT_IDEAL_SEND_BUFFER_SIZE => println!("Ideal send buffer size"),
+            crate::STREAM_EVENT_PEER_ACCEPTED => println!("Peer accepted"),
+            _ => println!("Other callback {}", event.event_type),
         }
-        STREAM_EVENT_IDEAL_SEND_BUFFER_SIZE => println!("Ideal send buffer size"),
-        STREAM_EVENT_PEER_ACCEPTED => println!("Peer accepted"),
-        _ => println!("Other callback {}", event.event_type),
+        0
     }
-    0
-}
 
-#[test]
-fn test_module() {
-    let res = Registration::new(ptr::null());
-    assert!(
-        res.is_ok(),
-        "Failed to open registration: {}",
-        res.err().unwrap()
-    );
-    let registration = res.unwrap();
+    #[test]
+    fn test_module() {
+        let res = Registration::new(ptr::null());
+        assert!(
+            res.is_ok(),
+            "Failed to open registration: {}",
+            res.err().unwrap()
+        );
+        let registration = res.unwrap();
 
-    let alpn = [Buffer::from("h3")];
-    let res = Configuration::new(
-        &registration,
-        &alpn,
-        #[cfg(feature = "preview-api")]
-        Settings::new()
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(3)
-            .set_stream_multi_receive_enabled(true),
-        #[cfg(not(feature = "preview-api"))]
-        Settings::new()
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(3),
-    );
-    assert!(
-        res.is_ok(),
-        "Failed to open configuration: {}",
-        res.err().unwrap()
-    );
-    let configuration = res.unwrap();
+        let alpn = [Buffer::from("h3")];
+        let res = Configuration::new(
+            &registration,
+            &alpn,
+            #[cfg(feature = "preview-api")]
+            Settings::new()
+                .set_peer_bidi_stream_count(100)
+                .set_peer_unidi_stream_count(3)
+                .set_stream_multi_receive_enabled(true),
+            #[cfg(not(feature = "preview-api"))]
+            Settings::new()
+                .set_peer_bidi_stream_count(100)
+                .set_peer_unidi_stream_count(3),
+        );
+        assert!(
+            res.is_ok(),
+            "Failed to open configuration: {}",
+            res.err().unwrap()
+        );
+        let configuration = res.unwrap();
 
-    let cred_config = CredentialConfig::new_client();
-    let res = configuration.load_credential(&cred_config);
-    assert!(
-        res.is_ok(),
-        "Failed to load credential: {}",
-        res.err().unwrap()
-    );
+        let cred_config = CredentialConfig::new_client();
+        let res = configuration.load_credential(&cred_config);
+        assert!(
+            res.is_ok(),
+            "Failed to load credential: {}",
+            res.err().unwrap()
+        );
 
-    let mut connection = Connection::new();
-    let res = connection.open(
-        &registration,
-        test_conn_callback,
-        &connection as *const Connection as *const c_void,
-    );
-    assert!(
-        res.is_ok(),
-        "Failed to open connection: {}",
-        res.err().unwrap()
-    );
+        let mut connection = Connection::new();
+        let res = connection.open(
+            &registration,
+            Some(test_conn_callback),
+            &connection as *const Connection as *const c_void,
+        );
+        assert!(
+            res.is_ok(),
+            "Failed to open connection: {}",
+            res.err().unwrap()
+        );
 
-    let res = connection.start(&configuration, "www.cloudflare.com", 443);
-    assert!(
-        res.is_ok(),
-        "Failed to start connection: {}",
-        res.err().unwrap()
-    );
+        let res = connection.start(&configuration, "www.cloudflare.com", 443);
+        assert!(
+            res.is_ok(),
+            "Failed to start connection: {}",
+            res.err().unwrap()
+        );
 
-    let duration = std::time::Duration::from_millis(1000);
-    std::thread::sleep(duration);
+        let duration = std::time::Duration::from_millis(1000);
+        std::thread::sleep(duration);
+    }
 }
