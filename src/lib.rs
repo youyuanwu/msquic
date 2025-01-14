@@ -12,6 +12,7 @@ use ffi::HQUIC;
 use ffi::QUIC_API_TABLE;
 use ffi::QUIC_BUFFER;
 use ffi::QUIC_CREDENTIAL_CONFIG;
+use ffi::QUIC_ERROR;
 use ffi::QUIC_SETTINGS;
 use libc::c_void;
 use serde::{Deserialize, Serialize};
@@ -1150,8 +1151,8 @@ impl Api {
             START_MSQUIC.call_once(|| {
                 let mut table: *const QUIC_API_TABLE = ptr::null();
                 let status = MsQuicOpenVersion(2, std::ptr::addr_of_mut!(table));
-                if Status::failed(status) {
-                    panic!("Failed to open MsQuic: {}", status);
+                if let Err(err) = Error::ok_from_raw(status as QUIC_ERROR) {
+                    panic!("Failed to open MsQuic: {}", err);
                 }
                 APITABLE = table;
             });
@@ -1293,17 +1294,14 @@ impl Api {
         param: u32,
         buffer_length: *const u32,
         buffer: *mut c_void,
-    ) -> Result<(), u32> {
+    ) -> Result<(), Error> {
         let status = unsafe {
             Api::ffi_ref().GetParam.unwrap()(handle, param, buffer_length as *mut u32, buffer)
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
-    pub fn get_perf(&self) -> Result<QuicPerformance, u32> {
+    pub fn get_perf(&self) -> Result<QuicPerformance, Error> {
         let mut perf = QuicPerformance {
             counters: [0; PERF_COUNTER_MAX as usize],
         };
@@ -1347,7 +1345,7 @@ fn close_msquic() {
 }
 
 impl Registration {
-    pub fn new(config: *const RegistrationConfig) -> Result<Registration, u32> {
+    pub fn new(config: *const RegistrationConfig) -> Result<Registration, Error> {
         // Initialize the global api table.
         // Registration is the first created in all msquic apps.
         let api = Api::get_ffi();
@@ -1359,9 +1357,7 @@ impl Registration {
             )
         };
 
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
+        Error::ok_from_raw(status)?;
         Ok(Registration { handle: h })
     }
 
@@ -1406,7 +1402,7 @@ impl Configuration {
         registration: &Registration,
         alpn: &[Buffer],
         settings: *const Settings,
-    ) -> Result<Configuration, u32> {
+    ) -> Result<Configuration, Error> {
         let context: *mut c_void = ptr::null_mut();
         let mut new_configuration: HQUIC = ptr::null_mut();
         let mut settings_size: u32 = 0;
@@ -1425,25 +1421,20 @@ impl Configuration {
                 std::ptr::addr_of_mut!(new_configuration),
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
+        Error::ok_from_raw(status)?;
         Ok(Configuration {
             handle: new_configuration,
         })
     }
 
-    pub fn load_credential(&self, cred_config: &CredentialConfig) -> Result<(), u32> {
+    pub fn load_credential(&self, cred_config: &CredentialConfig) -> Result<(), Error> {
         let status = unsafe {
             Api::ffi_ref().ConfigurationLoadCredential.unwrap()(
                 self.handle,
                 cred_config as *const CredentialConfig as *const QUIC_CREDENTIAL_CONFIG,
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 }
 
@@ -1487,7 +1478,7 @@ impl Connection {
         registration: &Registration,
         handler: ConnectionEventHandler,
         context: *const c_void,
-    ) -> Result<(), u32> {
+    ) -> Result<(), Error> {
         // TODO: remove transmute.
         #[allow(clippy::missing_transmute_annotations)]
         let status = unsafe {
@@ -1498,10 +1489,7 @@ impl Connection {
                 std::ptr::addr_of_mut!(self.handle),
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn start(
@@ -1520,10 +1508,7 @@ impl Connection {
                 server_port,
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     // TODO: remove ref?
@@ -1593,10 +1578,7 @@ impl Connection {
         let status = unsafe {
             Api::ffi_ref().ConnectionSetConfiguration.unwrap()(self.handle, configuration.handle)
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     /// # Safety
@@ -1636,22 +1618,16 @@ impl Connection {
                 client_send_context as *mut c_void,
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
-    pub fn resumption_ticket_validation_complete(&self, result: BOOLEAN) -> Result<(), u32> {
+    pub fn resumption_ticket_validation_complete(&self, result: BOOLEAN) -> Result<(), Error> {
         let status = unsafe {
             Api::ffi_ref()
                 .ConnectionResumptionTicketValidationComplete
                 .unwrap()(self.handle, result)
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn certificate_validation_complete(
@@ -1664,10 +1640,7 @@ impl Connection {
                 .ConnectionCertificateValidationComplete
                 .unwrap()(self.handle, result, tls_alert as i32)
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn get_local_addr(&self) -> Result<Addr, Error> {
@@ -1725,7 +1698,7 @@ impl Listener {
         registration: &Registration,
         handler: ListenerEventHandler,
         context: *const c_void,
-    ) -> Result<(), u32> {
+    ) -> Result<(), Error> {
         // TODO: remove transmute.
         #[allow(clippy::missing_transmute_annotations)]
         let status = unsafe {
@@ -1736,10 +1709,7 @@ impl Listener {
                 std::ptr::addr_of_mut!(self.handle),
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn start(&self, alpn: &[Buffer], local_address: Option<&Addr>) -> Result<(), Error> {
@@ -1753,10 +1723,7 @@ impl Listener {
                     .unwrap_or(ptr::null()),
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn stop(&self) {
@@ -1818,7 +1785,7 @@ impl Stream {
         flags: StreamOpenFlags,
         handler: StreamEventHandler,
         context: *const c_void,
-    ) -> Result<(), u32> {
+    ) -> Result<(), Error> {
         // TODO: remove transmute.
         #[allow(clippy::missing_transmute_annotations)]
         let status = unsafe {
@@ -1830,28 +1797,19 @@ impl Stream {
                 std::ptr::addr_of_mut!(self.handle),
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
-    pub fn start(&self, flags: StreamStartFlags) -> Result<(), u32> {
+    pub fn start(&self, flags: StreamStartFlags) -> Result<(), Error> {
         let status = unsafe { Api::ffi_ref().StreamStart.unwrap()(self.handle, flags as i32) };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
-    pub fn shutdown(&self, flags: StreamShutdownFlags, error_code: u62) -> Result<(), u32> {
+    pub fn shutdown(&self, flags: StreamShutdownFlags, error_code: u62) -> Result<(), Error> {
         let status = unsafe {
             Api::ffi_ref().StreamShutdown.unwrap()(self.handle, flags as i32, error_code)
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     pub fn close(&mut self) {
@@ -1879,10 +1837,7 @@ impl Stream {
                 client_send_context as *mut c_void, //(self as *const Stream) as *const c_void,
             )
         };
-        if Status::failed(status as u32) {
-            return Err(status as u32);
-        }
-        Ok(())
+        Error::ok_from_raw(status)
     }
 
     /// # Safety
