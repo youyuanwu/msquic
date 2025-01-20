@@ -146,6 +146,8 @@ mod tests {
         let first1 = &buffs.as_slice()[0];
         // If we drop buffers here on this line, compiler can catch the first1's lifetime is violated.
         // This shows that the BufferSlice wrapper captures the right lifetime of the buffers.
+        // However there is no way to carry the lifetime of the var `first` into var `buffers` because the C style
+        // api raw pointer boundary has been crossed.
         // TODO: msquic has feature to hold on to buffers even after callback have returned. This is
         // is not supported safely in rust. (event if we support this, buffs reference's lifetime is still only valid
         // at the end of the callback function. However, the lifetime of content of the buffer, i.e. &[u8], can be extended.)
