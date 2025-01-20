@@ -32,19 +32,19 @@ impl<'a> From<&'a QUIC_NEW_CONNECTION_INFO> for NewConnectionInfo<'a> {
                     .unwrap()
             },
             crypto_buffer: unsafe {
-                bytes_conv(value.CryptoBuffer, value.CryptoBufferLength as usize)
+                slice_conv(value.CryptoBuffer, value.CryptoBufferLength as usize)
             },
             client_alpn_list: unsafe {
-                bytes_conv(value.ClientAlpnList, value.ClientAlpnListLength as usize)
+                slice_conv(value.ClientAlpnList, value.ClientAlpnListLength as usize)
             },
             server_name: unsafe {
-                bytes_conv(
+                slice_conv(
                     value.ServerName as *const u8,
                     value.ServerNameLength as usize,
                 )
             },
             negotiated_alpn: unsafe {
-                bytes_conv(value.NegotiatedAlpn, value.NegotiatedAlpnLength as usize)
+                slice_conv(value.NegotiatedAlpn, value.NegotiatedAlpnLength as usize)
             },
         }
     }
@@ -70,10 +70,10 @@ impl<'a> From<&'a crate::ffi::QUIC_LISTENER_EVENT> for ListenerEvent<'a> {
         }
     }
 }
-/// convert buffer to slice.
-/// allow empty buffer. slice::from_raw_parts does not allow empty buffer.
+/// Convert array pointer to slice.
+/// Allows empty buffer. slice::from_raw_parts does not allow empty buffer.
 #[inline]
-unsafe fn bytes_conv<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+unsafe fn slice_conv<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     if len == 0 {
         &[]
     } else {
@@ -88,26 +88,69 @@ pub struct Buffer(pub QUIC_BUFFER);
 impl Buffer {
     /// get the bytes as slice.
     pub fn as_bytes(&self) -> &[u8] {
-        unsafe { bytes_conv(self.0.Buffer, self.0.Length as usize) }
+        unsafe { slice_conv(self.0.Buffer, self.0.Length as usize) }
+    }
+}
+
+/// Slice of buffer used to convert array of buffers in callback events.
+pub struct BufferSlice<'a>(pub &'a [QUIC_BUFFER]);
+
+impl<'a> BufferSlice<'a> {
+    /// Get a slice of buffers.
+    pub fn as_slice(&self) -> &'a [Buffer] {
+        // because inner slice type and the return type has the same abi repr, it is ok to convert them
+        unsafe { slice_conv(self.0.as_ptr() as *const Buffer, self.0.len()) }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::bytes_conv;
+    use crate::ffi::QUIC_BUFFER;
+
+    use super::{slice_conv, BufferSlice};
 
     #[test]
     fn conv_test() {
         {
             let ptr = std::ptr::null::<u8>();
             let len = 0;
-            let buff = unsafe { bytes_conv(ptr, len) };
+            let buff = unsafe { slice_conv(ptr, len) };
             assert_eq!(buff.len(), 0)
         }
         {
             let original = b"hello";
-            let buff = unsafe { bytes_conv(original.as_ptr(), original.len()) };
+            let buff = unsafe { slice_conv(original.as_ptr(), original.len()) };
             assert_eq!(buff, original.as_slice())
         }
+    }
+
+    #[test]
+    fn buffer_test() {
+        let first = Box::new(b"first");
+        let second = b"second";
+        let buffers = Box::new([
+            QUIC_BUFFER {
+                Buffer: first.as_ptr() as *mut u8,
+                Length: first.len() as u32,
+            },
+            QUIC_BUFFER {
+                Buffer: second.as_ptr() as *mut u8,
+                Length: second.len() as u32,
+            },
+        ]);
+        let buffs = BufferSlice(buffers.as_ref());
+        // In callback events, BufferSlice buffs is the given type and memory is from C,
+        // and it has the right lifetime.
+        // In this test, `buffers` variable emulates the memory from C.
+
+        let first1 = &buffs.as_slice()[0];
+        // If we drop buffers here on this line, compiler can catch the first1's lifetime is violated.
+        // This shows that the BufferSlice wrapper captures the right lifetime of the buffers.
+        // TODO: msquic has feature to hold on to buffers even after callback have returned. This is
+        // is not supported safely in rust. (event if we support this, buffs reference's lifetime is still only valid
+        // at the end of the callback function. However, the lifetime of content of the buffer, i.e. &[u8], can be extended.)
+        let second1 = &buffs.as_slice()[1];
+        assert_eq!(first.as_slice(), first1.as_bytes());
+        assert_eq!(second, second1.as_bytes());
     }
 }
