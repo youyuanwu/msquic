@@ -26,6 +26,7 @@ extern crate bitfield;
 mod error;
 pub mod ffi;
 pub use error::{Error, ErrorCode};
+pub mod types3;
 
 //
 // The following starts the C interop layer of MsQuic API.
