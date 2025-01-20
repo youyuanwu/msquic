@@ -1,3 +1,5 @@
+use std::ffi::c_void;
+
 use crate::ffi::{HQUIC, QUIC_BUFFER, QUIC_NEW_CONNECTION_INFO};
 
 /// Listener event converted from ffi type.
@@ -81,11 +83,12 @@ unsafe fn slice_conv<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     }
 }
 
-/// Buffer with same abi as ffi type
+/// Buffer with same abi as ffi type.
+/// It has no ownership of the memory chunk.
 #[repr(transparent)]
-pub struct Buffer(pub QUIC_BUFFER);
+pub struct BufferRef(pub QUIC_BUFFER);
 
-impl Buffer {
+impl BufferRef {
     /// get the bytes as slice.
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { slice_conv(self.0.Buffer, self.0.Length as usize) }
@@ -93,21 +96,113 @@ impl Buffer {
 }
 
 /// Slice of buffer used to convert array of buffers in callback events.
-pub struct BufferSlice<'a>(pub &'a [QUIC_BUFFER]);
+pub struct BufferRefSlice<'a>(pub &'a [QUIC_BUFFER]);
 
-impl<'a> BufferSlice<'a> {
+impl<'a> BufferRefSlice<'a> {
     /// Get a slice of buffers.
-    pub fn as_slice(&self) -> &'a [Buffer] {
+    pub fn as_slice(&self) -> &'a [BufferRef] {
         // because inner slice type and the return type has the same abi repr, it is ok to convert them
-        unsafe { slice_conv(self.0.as_ptr() as *const Buffer, self.0.len()) }
+        unsafe { slice_conv(self.0.as_ptr() as *const BufferRef, self.0.len()) }
+    }
+}
+
+/// Buffers with owned memory used for sending data.
+pub trait BuffersOwned {
+    /// Get the buffers to pass to ffi api.
+    /// Buffers memory should not change, since they are passed to ffi.
+    fn as_ffi(&self) -> &[QUIC_BUFFER];
+}
+
+pub trait BuffersOwnedDetachable: BuffersOwned {
+    /// Detach memory onwership to pass in ffi api as client_context.
+    fn into_raw(self) -> *const c_void;
+
+    /// Reattach memory ownership from what previously returned by into_raw().
+    /// # Safety
+    /// raw needs to be previously returned by into_raw().
+    ///
+    /// ffi usually gives back the client_context in the callback after
+    /// finishing using the buffer.
+    unsafe fn from_raw(raw: *const c_void) -> Self;
+}
+
+/// Buffers backed by vectors.
+/// T is the buffer type that can convert to slice, typically Vec<u8> or array
+/// are used.
+pub struct VecBuffers<T: AsRef<[u8]>> {
+    /// buffers. Each chunk T is heap allocated via Vec,
+    _data: Vec<T>,
+    meta: Vec<QUIC_BUFFER>,
+}
+
+impl<T: AsRef<[u8]>> BuffersOwned for VecBuffers<T> {
+    fn as_ffi(&self) -> &[QUIC_BUFFER] {
+        self.meta.as_slice()
+    }
+}
+
+impl<T: AsRef<[u8]>> VecBuffers<T> {
+    pub fn new(data: Vec<T>) -> Self {
+        let meta = data
+            .iter()
+            .by_ref()
+            .map(|b| {
+                let buf_ref = b.as_ref();
+                QUIC_BUFFER {
+                    Buffer: buf_ref.as_ptr() as *mut u8,
+                    Length: buf_ref.len() as u32,
+                }
+            })
+            .collect();
+        Self { _data: data, meta }
+    }
+}
+
+/// Detachable wrapper using Box.
+pub struct BoxedBuffersOwned<T: BuffersOwned> {
+    inner: Box<T>,
+}
+
+impl<T: BuffersOwned> BoxedBuffersOwned<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Unbox the inner.
+    pub fn into_inner(self) -> T {
+        *self.inner
+    }
+}
+
+/// pass through inner type to get buffers.
+impl<T: BuffersOwned> BuffersOwned for BoxedBuffersOwned<T> {
+    fn as_ffi(&self) -> &[QUIC_BUFFER] {
+        self.inner.as_ffi()
+    }
+}
+
+impl<T: BuffersOwned> BuffersOwnedDetachable for BoxedBuffersOwned<T> {
+    fn into_raw(self) -> *const c_void {
+        Box::into_raw(self.inner) as *const c_void
+    }
+
+    unsafe fn from_raw(raw: *const c_void) -> Self {
+        Self {
+            inner: Box::from_raw(raw as *mut T),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::ffi::QUIC_BUFFER;
+    use crate::{
+        ffi::QUIC_BUFFER,
+        types3::{BoxedBuffersOwned, BuffersOwnedDetachable},
+    };
 
-    use super::{slice_conv, BufferSlice};
+    use super::{slice_conv, BufferRefSlice, BuffersOwned, VecBuffers};
 
     #[test]
     fn conv_test() {
@@ -124,8 +219,11 @@ mod tests {
         }
     }
 
+    const FIRST: &[u8; 5] = b"aaaaa";
+    const SECOND: &[u8; 5] = b"bbbbb";
+
     #[test]
-    fn buffer_test() {
+    fn buffer_read_test() {
         let first = Box::new(b"first");
         let second = b"second";
         let buffers = Box::new([
@@ -138,7 +236,7 @@ mod tests {
                 Length: second.len() as u32,
             },
         ]);
-        let buffs = BufferSlice(buffers.as_ref());
+        let buffs = BufferRefSlice(buffers.as_ref());
         // In callback events, BufferSlice buffs is the given type and memory is from C,
         // and it has the right lifetime.
         // In this test, `buffers` variable emulates the memory from C.
@@ -154,5 +252,33 @@ mod tests {
         let second1 = &buffs.as_slice()[1];
         assert_eq!(first.as_slice(), first1.as_bytes());
         assert_eq!(second, second1.as_bytes());
+    }
+
+    #[test]
+    fn buffer_write_test_vec() {
+        let buffers = VecBuffers::new(vec![FIRST.to_vec(), SECOND.to_vec()]);
+        buffer_write_test(buffers);
+    }
+
+    #[test]
+    fn buffer_write_test_array() {
+        let buffers = VecBuffers::new(vec![FIRST.to_owned(), SECOND.to_owned()]);
+        buffer_write_test(buffers);
+    }
+
+    fn buffer_write_test<T: BuffersOwned>(buffers: T) {
+        let buffers = BoxedBuffersOwned::new(buffers);
+
+        let refs = BufferRefSlice(buffers.as_ffi());
+        // try read it
+        assert_eq!(refs.as_slice()[0].as_bytes(), FIRST);
+        assert_eq!(refs.as_slice()[1].as_bytes(), SECOND);
+
+        // detach and reattach and check content
+        let raw = buffers.into_raw();
+        let buffers2 = unsafe { BoxedBuffersOwned::<T>::from_raw(raw) }.into_inner();
+        let refs2 = BufferRefSlice(buffers2.as_ffi());
+        assert_eq!(refs2.as_slice()[0].as_bytes(), FIRST);
+        assert_eq!(refs2.as_slice()[1].as_bytes(), SECOND);
     }
 }
