@@ -80,8 +80,8 @@ pub struct CredentialConfig {
 }
 
 impl CredentialConfig {
-    pub fn new() -> Self{
-      Self::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// flags are additive when called multiple times.
@@ -262,5 +262,67 @@ bitflags::bitflags! {
 impl Default for AllowedCipherSuiteFlags {
     fn default() -> Self {
         Self::NONE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        types2::{CertificateFile, CertificateHash, Credential},
+        Buffer, Configuration, Registration, RegistrationConfig, Settings, StatusCode,
+    };
+
+    use super::CredentialConfig;
+
+    #[test]
+    fn config_load() {
+        let registration = Registration::new(&RegistrationConfig::default()).unwrap();
+
+        let alpn = [Buffer::from("h3")];
+        let configuration = Configuration::new(
+            &registration,
+            &alpn,
+            Settings::new()
+                .set_peer_bidi_stream_count(100)
+                .set_peer_unidi_stream_count(3),
+        )
+        .unwrap();
+
+        {
+            let cred_config =
+                CredentialConfig::new().set_credential_flags(super::CredentialFlags::NONE);
+            // server cred missing
+            assert_eq!(
+                configuration
+                    .load_credential(&cred_config)
+                    .unwrap_err()
+                    .try_as_status_code()
+                    .unwrap(),
+                StatusCode::QUIC_STATUS_INVALID_PARAMETER
+            );
+            // openssl does not support hash, or hash is empty and cert not found
+            let cred_config = cred_config
+                .set_credential(Credential::CertificateHash(CertificateHash::new([0; 20])));
+            assert_eq!(
+                configuration
+                    .load_credential(&cred_config)
+                    .unwrap_err()
+                    .try_as_status_code()
+                    .unwrap(),
+                StatusCode::QUIC_STATUS_NOT_FOUND
+            );
+            // key and cert file not found
+            let cred_config = cred_config.set_credential(Credential::CertificateFile(
+                CertificateFile::new(String::from("./no_key"), String::from("./no_cert")),
+            ));
+            assert_eq!(
+                configuration
+                    .load_credential(&cred_config)
+                    .unwrap_err()
+                    .try_as_status_code()
+                    .unwrap(),
+                StatusCode::QUIC_STATUS_TLS_ERROR
+            );
+        }
     }
 }
