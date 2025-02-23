@@ -184,6 +184,15 @@ impl CertificateHash {
         Self::new(buff)
     }
 
+    /// To hex string
+    pub fn to_hex_string(&self) -> String {
+        use std::fmt::Write;
+        self.0.ShaHash.iter().fold(String::new(), |mut out, x| {
+            write!(out, "{:02X}", x).unwrap();
+            out
+        })
+    }
+
     fn decode_hex(s: &str) -> Result<[u8; 20usize], std::num::ParseIntError> {
         let mut buff = [0_u8; 20usize];
         assert_eq!(s.len(), buff.len() * 2);
@@ -499,12 +508,7 @@ mod tests {
     fn hash_test() {
         let hex_str = "0E31650DFB5283AB820E3735FD2B254A286F46B3";
         let hash = CertificateHash::from_str(hex_str);
-        let hex = hash
-            .0
-            .ShaHash
-            .iter()
-            .map(|x| format!("{:02X}", x))
-            .collect::<String>();
+        let hex = hash.to_hex_string();
         assert_eq!(hex_str, hex);
     }
 }
