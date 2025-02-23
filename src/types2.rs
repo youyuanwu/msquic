@@ -124,15 +124,31 @@ impl CredentialConfig {
                     crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH;
                 ffi_cfg.__bindgen_anon_1.CertificateHash = (&hash.0) as *const _ as *mut _;
             }
-            Credential::CertificateHashStore => todo!(),
-            Credential::CertificateContext => todo!(),
+            Credential::CertificateHashStore(hash) => {
+                ffi_cfg.Type =
+                    crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_HASH_STORE;
+                ffi_cfg.__bindgen_anon_1.CertificateHashStore = (&hash.0) as *const _ as *mut _;
+            }
+            Credential::CertificateContext(ctx) => {
+                ffi_cfg.Type =
+                    crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_CONTEXT;
+                ffi_cfg.__bindgen_anon_1.CertificateContext = *ctx as *mut _;
+            }
             Credential::CertificateFile(file) => {
                 ffi_cfg.Type =
                     crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
                 ffi_cfg.__bindgen_anon_1.CertificateFile = file.as_ffi_ref() as *const _ as *mut _;
             }
-            Credential::CertificateFileProtected => todo!(),
-            Credential::CertificatePkcs12 => todo!(),
+            Credential::CertificateFileProtected(file) => {
+                ffi_cfg.Type = crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE_PROTECTED;
+                ffi_cfg.__bindgen_anon_1.CertificateFile = file.as_ffi_ref() as *const _ as *mut _;
+            }
+            Credential::CertificatePkcs12(cert) => {
+                ffi_cfg.Type =
+                    crate::ffi::QUIC_CREDENTIAL_TYPE_QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12;
+                ffi_cfg.__bindgen_anon_1.CertificatePkcs12 =
+                    cert.as_ffi_ref() as *const _ as *mut _;
+            }
         }
         ffi_cfg.Principal = self
             .principle
@@ -160,6 +176,62 @@ pub struct CertificateHash(pub crate::ffi::QUIC_CERTIFICATE_HASH);
 impl CertificateHash {
     pub fn new(hash: [u8; 20usize]) -> Self {
         Self(crate::ffi::QUIC_CERTIFICATE_HASH { ShaHash: hash })
+    }
+
+    /// Helper function to convert hex string of hash into the hash bytes.
+    pub fn from_str(s: &str) -> Self {
+        let buff = Self::decode_hex(s).unwrap();
+        Self::new(buff)
+    }
+
+    fn decode_hex(s: &str) -> Result<[u8; 20usize], std::num::ParseIntError> {
+        let mut buff = [0_u8; 20usize];
+        assert_eq!(s.len(), buff.len() * 2);
+        // Parse every 2 bytes and fill the buffer.
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
+            .zip(buff.iter_mut())
+            .try_for_each(|(b, df)| match b {
+                Ok(data) => {
+                    *df = data;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            })?;
+        Ok(buff)
+    }
+}
+
+// QUIC_CERTIFICATE_HASH_STORE
+#[derive(Debug)]
+pub struct CertificateHashStore(pub crate::ffi::QUIC_CERTIFICATE_HASH_STORE);
+
+impl CertificateHashStore {
+    pub fn new(flags: CertificatHashStoreFlags, hash: [u8; 20], store_name: String) -> Self {
+        // prepare slice with nul terminator
+        let c_str = CString::new(store_name).unwrap();
+        let c_slice = c_str.as_bytes_with_nul();
+        let c_slice2 =
+            unsafe { std::slice::from_raw_parts(c_slice.as_ptr() as *const i8, c_slice.len()) };
+        // copy with nul terminator
+        let mut name_buff = [0_i8; 128];
+        let chunk = &mut name_buff[..c_slice2.len()];
+        chunk.copy_from_slice(c_slice2);
+        Self(crate::ffi::QUIC_CERTIFICATE_HASH_STORE {
+            Flags: flags.bits(),
+            ShaHash: hash,
+            StoreName: name_buff,
+        })
+    }
+}
+
+bitflags::bitflags! {
+    /// Modifies the default credential configuration.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CertificatHashStoreFlags: crate::ffi::QUIC_CERTIFICATE_HASH_STORE_FLAGS {
+        const NONE = crate::ffi::QUIC_CERTIFICATE_HASH_STORE_FLAGS_QUIC_CERTIFICATE_HASH_STORE_FLAG_NONE;
+        const MACHINE_STORE = crate::ffi::QUIC_CERTIFICATE_HASH_STORE_FLAGS_QUIC_CERTIFICATE_HASH_STORE_FLAG_MACHINE_STORE;
     }
 }
 
@@ -189,17 +261,84 @@ impl CertificateFile {
     }
 }
 
-// TODO: support all cred types.
+#[derive(Debug)]
+pub struct CertificateFileProtected {
+    raw: crate::ffi::QUIC_CERTIFICATE_FILE_PROTECTED,
+    _private_key_file: CString,
+    _certificate_file: CString,
+    _private_key_password: CString,
+}
+
+impl CertificateFileProtected {
+    pub fn new(
+        private_key_file: String,
+        certificate_file: String,
+        private_key_password: String,
+    ) -> Self {
+        let key = CString::new(private_key_file.as_bytes()).unwrap();
+        let cert = CString::new(certificate_file.as_bytes()).unwrap();
+        let pwd = CString::new(private_key_password.as_bytes()).unwrap();
+        Self {
+            raw: crate::ffi::QUIC_CERTIFICATE_FILE_PROTECTED {
+                PrivateKeyFile: key.as_ptr(),
+                CertificateFile: cert.as_ptr(),
+                PrivateKeyPassword: pwd.as_ptr(),
+            },
+            _private_key_file: key,
+            _certificate_file: cert,
+            _private_key_password: pwd,
+        }
+    }
+
+    pub fn as_ffi_ref(&self) -> &crate::ffi::QUIC_CERTIFICATE_FILE_PROTECTED {
+        &self.raw
+    }
+}
+
+#[derive(Debug)]
+pub struct CertificatePkcs12 {
+    raw: crate::ffi::QUIC_CERTIFICATE_PKCS12,
+    _asn1_blob: Vec<u8>,
+    _private_key_password: Option<CString>,
+}
+
+impl CertificatePkcs12 {
+    pub fn new(asn1_blob: Vec<u8>, private_key_password: Option<CString>) -> Self {
+        Self {
+            raw: crate::ffi::QUIC_CERTIFICATE_PKCS12 {
+                Asn1Blob: asn1_blob.as_ptr(),
+                Asn1BlobLength: asn1_blob.len() as u32,
+                PrivateKeyPassword: private_key_password
+                    .as_ref()
+                    .map(|p| p.as_ptr())
+                    .unwrap_or(std::ptr::null()),
+            },
+            _asn1_blob: asn1_blob,
+            _private_key_password: private_key_password,
+        }
+    }
+
+    pub fn as_ffi_ref(&self) -> &crate::ffi::QUIC_CERTIFICATE_PKCS12 {
+        &self.raw
+    }
+}
+
 /// Type of credentials used for a connection.
 #[derive(Debug)]
 pub enum Credential {
     None,
+    /// windows schannel only
     CertificateHash(CertificateHash),
-    CertificateHashStore,
-    CertificateContext,
+    /// windows schannel only
+    CertificateHashStore(CertificateHashStore),
+    /// windows user mode only
+    CertificateContext(*const crate::ffi::QUIC_CERTIFICATE),
+    /// openssl only
     CertificateFile(CertificateFile),
-    CertificateFileProtected,
-    CertificatePkcs12,
+    /// openssl only
+    CertificateFileProtected(CertificateFileProtected),
+    /// openssl only
+    CertificatePkcs12(CertificatePkcs12),
 }
 
 impl Default for Credential {
@@ -268,7 +407,10 @@ impl Default for AllowedCipherSuiteFlags {
 #[cfg(test)]
 mod tests {
     use crate::{
-        types2::{CertificateFile, CertificateHash, Credential},
+        types2::{
+            CertificatHashStoreFlags, CertificateFile, CertificateHash, CertificateHashStore,
+            Credential,
+        },
         Buffer, Configuration, Registration, RegistrationConfig, Settings, StatusCode,
     };
 
@@ -323,6 +465,46 @@ mod tests {
                     .unwrap(),
                 StatusCode::QUIC_STATUS_TLS_ERROR
             );
+
+            let cred_config = cred_config.set_credential(Credential::CertificateHashStore(
+                CertificateHashStore::new(
+                    CertificatHashStoreFlags::MACHINE_STORE,
+                    [0; 20],
+                    String::from("MY"),
+                ),
+            ));
+            assert_eq!(
+                configuration
+                    .load_credential(&cred_config)
+                    .unwrap_err()
+                    .try_as_status_code()
+                    .unwrap(),
+                StatusCode::QUIC_STATUS_NOT_FOUND
+            );
+
+            let cred_config =
+                cred_config.set_credential(Credential::CertificateContext(std::ptr::null()));
+            assert_eq!(
+                configuration
+                    .load_credential(&cred_config)
+                    .unwrap_err()
+                    .try_as_status_code()
+                    .unwrap(),
+                StatusCode::QUIC_STATUS_INVALID_PARAMETER
+            );
         }
+    }
+
+    #[test]
+    fn hash_test() {
+        let hex_str = "0E31650DFB5283AB820E3735FD2B254A286F46B3";
+        let hash = CertificateHash::from_str(hex_str);
+        let hex = hash
+            .0
+            .ShaHash
+            .iter()
+            .map(|x| format!("{:02X}", x))
+            .collect::<String>();
+        assert_eq!(hex_str, hex);
     }
 }
