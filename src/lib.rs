@@ -1012,6 +1012,22 @@ impl Default for Connection {
     }
 }
 
+type ConnectionCallback = dyn Fn(ConnectionEvent) -> StatusCode + 'static;
+
+extern "C" fn raw_conn_callback(
+    _connection: HQUIC,
+    context: *mut c_void,
+    event: *mut ffi::QUIC_CONNECTION_EVENT,
+) -> QUIC_STATUS {
+    let f = unsafe {
+        (context as *mut Box<ConnectionCallback>)
+            .as_ref()
+            .expect("cannot get Fn from ctx")
+    };
+    let event = ConnectionEvent::from(unsafe { event.as_ref().unwrap() });
+    f(event).into()
+}
+
 impl Connection {
     pub fn new() -> Connection {
         Connection {
@@ -1019,23 +1035,25 @@ impl Connection {
         }
     }
 
-    /// TODO: The handler type should eventually be changed to Fn type.
-    /// ffi type and the context ptr makes this function unsafe.
-    pub fn open(
-        &mut self,
-        registration: &Registration,
-        handler: ffi::QUIC_CONNECTION_CALLBACK_HANDLER,
-        context: *const c_void,
-    ) -> Result<(), Status> {
+    pub fn open<F>(&mut self, registration: &Registration, handler: F) -> Result<(), Status>
+    where
+        F: Fn(ConnectionEvent) -> StatusCode + 'static,
+    {
+        // double boxing to allow Box dyn fat pointer
+        let b: Box<Box<ConnectionCallback>> = Box::new(Box::new(handler));
+        let ctx = Box::into_raw(b);
         let status = unsafe {
             Api::ffi_ref().ConnectionOpen.unwrap()(
                 registration.handle,
-                handler,
-                context as *mut c_void,
+                Some(raw_conn_callback),
+                ctx as *mut c_void,
                 std::ptr::addr_of_mut!(self.handle),
             )
         };
-        Status::ok_from_raw(status)
+        Status::ok_from_raw(status).inspect_err(|_| {
+            // attach memory back on failure
+            let _ = unsafe { Box::from_raw(ctx) };
+        })
     }
 
     pub fn start(
@@ -1061,6 +1079,13 @@ impl Connection {
         if !self.handle.is_null() {
             unsafe {
                 Api::ffi_ref().ConnectionClose.unwrap()(self.handle);
+            }
+            // Clean up context only if handle is present. (it is not a handle ref.)
+            // If there is a ctx, drop it.
+            let ctx = self.get_context();
+            if !ctx.is_null() {
+                unsafe { self.set_context(std::ptr::null_mut()) };
+                let _ = unsafe { Box::from_raw(ctx as *mut Box<ConnectionCallback>) };
             }
         }
     }
@@ -1108,6 +1133,17 @@ impl Connection {
                 context,
             )
         };
+    }
+
+
+    pub fn get_context(&self) -> *mut c_void {
+        unsafe { Api::ffi_ref().GetContext.unwrap()(self.handle) }
+    }
+
+    /// # Safety
+    /// Previous context needs to be cleaned up before set a new one.
+    pub unsafe fn set_context(&self, ctx: *mut c_void) {
+        unsafe { Api::ffi_ref().SetContext.unwrap()(self.handle, ctx) }
     }
 
     /// # Safety
@@ -1377,23 +1413,18 @@ mod tests {
         Settings, StatusCode, Stream, StreamEvent,
     };
 
-    extern "C" fn test_conn_callback(
-        _connection: HQUIC,
-        context: *mut c_void,
-        event: *mut ffi::QUIC_CONNECTION_EVENT,
-    ) -> QUIC_STATUS {
-        let connection = unsafe { &*(context as *const Connection) };
-        let ev_ref = unsafe { event.as_ref().unwrap() };
-        let event = ConnectionEvent::from(ev_ref);
+    fn test_conn_callback(event: ConnectionEvent) -> StatusCode {
+        // let connection = unsafe { &*(context as *const Connection) };
         match event {
             ConnectionEvent::Connected {
-                session_resumed,
+                session_resumed: _,
                 negotiated_alpn,
             } => {
-                let local_addr = connection.get_local_addr().unwrap().as_socket().unwrap();
-                let remote_addr = connection.get_remote_addr().unwrap().as_socket().unwrap();
+                //let local_addr = connection.get_local_addr().unwrap().as_socket().unwrap();
+                //let remote_addr = connection.get_remote_addr().unwrap().as_socket().unwrap();
                 let alpn = String::from_utf8_lossy(negotiated_alpn);
-                println!("Connected({local_addr}, {remote_addr}), session_resumed:{session_resumed}, negotiated_alpn:{alpn}");
+                //println!("Connected({local_addr}, {remote_addr}), session_resumed:{session_resumed}, negotiated_alpn:{alpn}");
+                println!("Connected alpn :{alpn}");
             }
             ConnectionEvent::ShutdownInitiatedByTransport { status, error_code } => {
                 println!("Transport shutdown {status}, {error_code}")
@@ -1416,7 +1447,9 @@ mod tests {
             }
             ConnectionEvent::PeerStreamStarted { stream, flags } => {
                 println!("Peer stream started: flags: {flags}");
-                unsafe { stream.set_callback_handler(Some(test_stream_callback), context) };
+                unsafe {
+                    stream.set_callback_handler(Some(test_stream_callback), std::ptr::null())
+                };
             }
             ConnectionEvent::StreamsAvailable {
                 bidirectional_count,
@@ -1429,9 +1462,9 @@ mod tests {
             ConnectionEvent::PeerNeedsStreams { bidirectional } => {
                 println!("Peer needs streams: bi: {bidirectional}");
             }
-            _ => println!("Connection other callback {}", ev_ref.Type),
+            _ => println!("Connection other callback ?",),
         }
-        StatusCode::QUIC_STATUS_SUCCESS.into()
+        StatusCode::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn test_stream_callback(
@@ -1548,11 +1581,7 @@ mod tests {
         );
 
         let mut connection = Connection::new();
-        let res = connection.open(
-            &registration,
-            Some(test_conn_callback),
-            &connection as *const Connection as *const c_void,
-        );
+        let res = connection.open(&registration, test_conn_callback);
         assert!(
             res.is_ok(),
             "Failed to open connection: {}",
