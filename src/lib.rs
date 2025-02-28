@@ -1122,9 +1122,7 @@ impl Connection {
         Status::ok_from_raw(status)
     }
 
-    /// # Safety
-    /// handler and context must be valid
-    pub unsafe fn set_callback_handler<F>(&self, handler: F)
+    pub fn set_callback_handler<F>(&self, handler: F)
     where
         F: Fn(ConnectionRef, ConnectionEvent) -> StatusCode + 'static,
     {
@@ -1141,7 +1139,7 @@ impl Connection {
         }
         // cleanup previous ctx if present and set the current one.
         self.clear_ctx_if_present();
-        self.set_context(ctx as *mut c_void);
+        unsafe { self.set_context(ctx as *mut c_void) };
     }
 
     /// clear ctx if it is present.
