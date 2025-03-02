@@ -40,7 +40,9 @@ fn test_server_client() {
     let config = Arc::new(config);
     let config_cp = config.clone();
 
-    let stream_handler = |stream: StreamRef, ev: StreamEvent| {
+    let (s_tx, s_rx) = std::sync::mpsc::channel::<String>();
+
+    let stream_handler = move |stream: StreamRef, ev: StreamEvent| {
         println!("Server stream: {ev:?}");
         match ev {
             StreamEvent::Receive {
@@ -49,8 +51,9 @@ fn test_server_client() {
                 buffers,
                 flags: _,
             } => {
+                // Send the result to main thread.
                 let s = buffers_to_string(buffers);
-                println!("Server stream receive: {}", s);
+                s_tx.send(s).unwrap();
             }
             StreamEvent::PeerSendShutdown { .. } => {
                 // reply to client
@@ -91,7 +94,7 @@ fn test_server_client() {
         println!("Server Connection: {ev:?}");
         match ev {
             crate::ConnectionEvent::PeerStreamStarted { stream, flags: _ } => {
-                stream.set_callback_handler(stream_handler);
+                stream.set_callback_handler(stream_handler.clone());
             }
             crate::ConnectionEvent::ShutdownComplete { .. } => {
                 // auto close connection
@@ -110,7 +113,7 @@ fn test_server_client() {
                 info: _,
                 connection,
             } => {
-                connection.set_callback_handler(conn_handler);
+                connection.set_callback_handler(conn_handler.clone());
                 connection.set_configuration(&config_cp)?;
             }
             crate::ListenerEvent::StopComplete {
@@ -136,8 +139,9 @@ fn test_server_client() {
         client_config.load_credential(&cred_config).unwrap();
     }
 
+    let (c_tx, c_rx) = std::sync::mpsc::channel::<String>();
     {
-        let stream_handler = |stream: StreamRef, ev: StreamEvent| {
+        let stream_handler = move |stream: StreamRef, ev: StreamEvent| {
             println!("Client stream: {ev:?}");
             match ev {
                 StreamEvent::SendComplete {
@@ -149,8 +153,9 @@ fn test_server_client() {
                     };
                 }
                 StreamEvent::Receive { buffers, .. } => {
+                    // send the result to main thread.
                     let s = buffers_to_string(buffers);
-                    println!("Client stream receive: {s}");
+                    c_tx.send(s).unwrap();
                 }
                 StreamEvent::ShutdownComplete { .. } => {
                     let _ = unsafe { Stream::from_raw(stream.as_raw()) };
@@ -167,7 +172,7 @@ fn test_server_client() {
                     // open stream and send
                     let f_send = || {
                         let mut s = Stream::new();
-                        s.open(&conn, STREAM_OPEN_FLAG_NONE, stream_handler)?;
+                        s.open(&conn, STREAM_OPEN_FLAG_NONE, stream_handler.clone())?;
                         s.start(STREAM_START_FLAG_NONE)?;
                         // BufferRef needs to be heap allocated
                         let b = "hello from client".as_bytes().to_vec();
@@ -206,7 +211,14 @@ fn test_server_client() {
         conn.start(&client_config, "127.0.0.1", 4567).unwrap();
 
         println!("waiting test finish");
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        let server_s = s_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(server_s, "hello from client");
+        let client_s = c_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(client_s, "hello from server");
     }
     l.stop();
 }
