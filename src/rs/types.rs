@@ -5,16 +5,19 @@ use crate::ffi::{QUIC_BUFFER, QUIC_CONNECTION_EVENT};
 use std::ffi::c_void;
 
 /// Listener event converted from ffi type.
+#[derive(Debug)]
 pub enum ListenerEvent<'a> {
     NewConnection {
         info: NewConnectionInfo<'a>,
-        connection: crate::Connection,
+        /// User is responsible for clean up.
+        connection: crate::ConnectionRef,
     },
     StopComplete {
         app_close_in_progress: bool,
     },
 }
 
+#[derive(Debug)]
 pub struct NewConnectionInfo<'a> {
     pub quic_version: u32,
     pub local_address: &'a crate::Addr,
@@ -61,7 +64,7 @@ impl<'a> From<&'a crate::ffi::QUIC_LISTENER_EVENT> for ListenerEvent<'a> {
                 let ev = unsafe { &value.__bindgen_anon_1.NEW_CONNECTION };
                 Self::NewConnection {
                     info: NewConnectionInfo::from(unsafe { ev.Info.as_ref().unwrap() }),
-                    connection: unsafe { crate::Connection::from_raw(ev.Connection) },
+                    connection: unsafe { crate::ConnectionRef::from_raw(ev.Connection) },
                 }
             }
             crate::ffi::QUIC_LISTENER_EVENT_TYPE_QUIC_LISTENER_EVENT_STOP_COMPLETE => {
@@ -77,6 +80,7 @@ impl<'a> From<&'a crate::ffi::QUIC_LISTENER_EVENT> for ListenerEvent<'a> {
 
 /// Connection callback events.
 /// TODO: derive Debug once all enums are safe.
+#[derive(Debug)]
 pub enum ConnectionEvent<'a> {
     Connected {
         session_resumed: bool,
@@ -247,6 +251,7 @@ impl<'a> From<&'a QUIC_CONNECTION_EVENT> for ConnectionEvent<'a> {
 }
 
 /// Stream callback events
+#[derive(Debug)]
 pub enum StreamEvent<'a> {
     StartComplete {
         status: crate::Status,
@@ -383,6 +388,7 @@ impl<'b> From<&'b mut crate::ffi::QUIC_STREAM_EVENT> for StreamEvent<'b> {
 /// the same lifetime as the original buffer
 /// location.
 #[repr(transparent)]
+#[derive(Debug)]
 pub struct BufferRef(pub QUIC_BUFFER);
 
 impl BufferRef {

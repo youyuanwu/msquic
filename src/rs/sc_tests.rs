@@ -1,0 +1,198 @@
+use std::{
+    ffi::c_void,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
+
+use crate::{
+    config::{CertificateHash, Credential, CredentialFlags},
+    Addr, BufferRef, Configuration, Connection, ConnectionEvent, ConnectionRef, CredentialConfig,
+    Listener, Registration, RegistrationConfig, Settings, Status, Stream, StreamEvent, StreamRef,
+    CONNECTION_SHUTDOWN_FLAG_NONE, SEND_FLAG_FIN, STREAM_OPEN_FLAG_NONE,
+    STREAM_SHUTDOWN_FLAG_ABORT, STREAM_START_FLAG_NONE,
+};
+
+fn buffers_to_string(buffers: &[BufferRef]) -> String {
+    let mut v = Vec::new();
+    for b in buffers {
+        println!("debug bytes: {:?}", b.as_bytes());
+        v.extend_from_slice(b.as_bytes());
+    }
+    String::from_utf8_lossy(v.as_slice()).to_string()
+}
+
+#[test]
+fn test_server_client() {
+    let reg = Registration::new(&RegistrationConfig::default()).unwrap();
+    let alpn = [BufferRef::from("qtest")];
+    let settings = Settings::new()
+        .set_ServerResumptionLevel(crate::ServerResumptionLevel::ResumeAndZerortt)
+        .set_PeerBidiStreamCount(1);
+
+    let config = Configuration::new(&reg, &alpn, Some(&settings)).unwrap();
+
+    let cred_config = CredentialConfig::new()
+        .set_credential_flags(CredentialFlags::NO_CERTIFICATE_VALIDATION)
+        .set_credential(Credential::CertificateHash(
+            CertificateHash::from_str("C2A39CFE2613C56F66DCB8C074E7E50A8CE6F4D4").unwrap(),
+        ));
+    config.load_credential(&cred_config).unwrap();
+    let config = Arc::new(config);
+    let config_cp = config.clone();
+
+    let stream_handler = |stream: StreamRef, ev: StreamEvent| {
+        println!("Server stream: {ev:?}");
+        match ev {
+            StreamEvent::Receive {
+                absolute_offset: _,
+                total_buffer_length: _,
+                buffers,
+                flags: _,
+            } => {
+                let s = buffers_to_string(buffers);
+                println!("Stream receive: {}", s);
+            }
+            StreamEvent::PeerSendShutdown { .. } => {
+                // reply to client
+                let b = Box::new("hello2".as_bytes().to_vec().into_boxed_slice());
+                let b_ref = [BufferRef::from((*b).as_ref())];
+                let ctx = Box::into_raw(b);
+                if unsafe { stream.send(&b_ref, SEND_FLAG_FIN, ctx as *const c_void) }.is_err() {
+                    let _ = unsafe { Box::from_raw(ctx) };
+                    let _ = stream.shutdown(STREAM_SHUTDOWN_FLAG_ABORT, 0);
+                };
+            }
+            StreamEvent::SendComplete {
+                cancelled: _,
+                client_context,
+            } => unsafe {
+                let _ = Box::from_raw(client_context as *mut Box<[u8]>);
+            },
+            StreamEvent::ShutdownComplete { .. } => {
+                // auto close
+                unsafe { Stream::from_raw(stream.as_raw()) };
+            }
+            _ => {}
+        };
+        Ok(())
+    };
+
+    let conn_handler = move |conn: ConnectionRef, ev: ConnectionEvent| {
+        println!("Server Connection: {ev:?}");
+        match ev {
+            crate::ConnectionEvent::PeerStreamStarted { stream, flags: _ } => {
+                stream.set_callback_handler(stream_handler);
+            }
+            crate::ConnectionEvent::ShutdownComplete { .. } => {
+                // auto close connection
+                unsafe { Connection::from_raw(conn.as_raw()) };
+            }
+            _ => {}
+        };
+        Ok(())
+    };
+
+    let mut l = Listener::new();
+    l.open(&reg, move |_, ev| {
+        println!("Listener event: {ev:?}");
+        match ev {
+            crate::ListenerEvent::NewConnection {
+                info: _,
+                connection,
+            } => {
+                connection.set_callback_handler(conn_handler);
+                connection.set_configuration(&config_cp)?;
+            }
+            crate::ListenerEvent::StopComplete {
+                app_close_in_progress: _,
+            } => {}
+        }
+        Ok(())
+    })
+    .unwrap();
+    let local_address = Addr::from(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        4567,
+    ));
+    println!("Starting listener");
+    l.start(&alpn, Some(&local_address)).unwrap();
+
+    // create client and send msg
+    let client_settings = Settings::new().set_IdleTimeoutMs(1000);
+    let client_config = Configuration::new(&reg, &alpn, Some(&client_settings)).unwrap();
+    {
+        let cred_config = CredentialConfig::new_client()
+            .set_credential_flags(CredentialFlags::NO_CERTIFICATE_VALIDATION);
+        client_config.load_credential(&cred_config).unwrap();
+    }
+
+    {
+        let stream_handler = |stream: StreamRef, ev: StreamEvent| {
+            println!("Client stream: {ev:?}");
+            match ev {
+                StreamEvent::SendComplete {
+                    cancelled: _,
+                    client_context,
+                } => {
+                    println!("client send complete");
+                    let _ = unsafe { Box::from_raw(client_context as *mut Box<[u8]>) };
+                }
+                StreamEvent::Receive { buffers, .. } => {
+                    let s = buffers_to_string(buffers);
+                    println!("client receive {s}");
+                }
+                StreamEvent::ShutdownComplete { .. } => {
+                    let _ = unsafe { Stream::from_raw(stream.as_raw()) };
+                }
+                _ => {}
+            }
+            Ok(())
+        };
+
+        let conn_handler = move |conn: ConnectionRef, ev: ConnectionEvent| {
+            println!("Client connection: {ev:?}");
+            match ev {
+                ConnectionEvent::Connected { .. } => {
+                    // open stream and send
+                    let f_send = || {
+                        let mut s = Stream::new();
+                        s.open(&conn, STREAM_OPEN_FLAG_NONE, stream_handler)?;
+                        s.start(STREAM_START_FLAG_NONE)?;
+                        // TODO: seems like the BufferRef array needs to be heap allocated?
+                        let b = Box::new("hello".as_bytes().to_vec().into_boxed_slice());
+                        let b_ref = [BufferRef::from((*b).as_ref())];
+                        let ctx = Box::into_raw(b);
+                        println!("Client send");
+                        unsafe { s.send(&b_ref, SEND_FLAG_FIN, ctx as *const c_void) }
+                            .inspect_err(|_| {
+                                let _ = unsafe { Box::from_raw(ctx) };
+                            })?;
+                        // detach stream and let callback cleanup
+                        unsafe { s.into_raw() };
+                        Ok::<(), Status>(())
+                    };
+                    if f_send().is_err() {
+                        println!("Client send failed");
+                        conn.shutdown(CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                    }
+                }
+                ConnectionEvent::ShutdownComplete { .. } => {
+                    // No need to close
+                    // unsafe { Connection::from_raw(conn.as_raw()) };
+                }
+                _ => {}
+            };
+            Ok(())
+        };
+
+        println!("open client connection");
+        let mut conn = Connection::new();
+        conn.open(&reg, conn_handler).unwrap();
+
+        conn.start(&client_config, "127.0.0.1", 4567).unwrap();
+
+        println!("waiting test finish");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    l.stop();
+}
