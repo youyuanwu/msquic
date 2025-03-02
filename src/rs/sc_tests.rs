@@ -50,23 +50,33 @@ fn test_server_client() {
                 flags: _,
             } => {
                 let s = buffers_to_string(buffers);
-                println!("Stream receive: {}", s);
+                println!("Server stream receive: {}", s);
             }
             StreamEvent::PeerSendShutdown { .. } => {
                 // reply to client
-                let b = Box::new("hello2".as_bytes().to_vec().into_boxed_slice());
-                let b_ref = [BufferRef::from((*b).as_ref())];
-                let ctx = Box::into_raw(b);
-                if unsafe { stream.send(&b_ref, SEND_FLAG_FIN, ctx as *const c_void) }.is_err() {
-                    let _ = unsafe { Box::from_raw(ctx) };
+                let b = "hello from server".as_bytes().to_vec();
+                let b_ref = Box::new([BufferRef::from((*b).as_ref())]);
+                let ctx = Box::new((b, b_ref));
+                if unsafe {
+                    stream.send(
+                        ctx.1.as_ref(),
+                        SEND_FLAG_FIN,
+                        ctx.as_ref() as *const _ as *const c_void,
+                    )
+                }
+                .is_err()
+                {
                     let _ = stream.shutdown(STREAM_SHUTDOWN_FLAG_ABORT, 0);
-                };
+                } else {
+                    // detach buffer
+                    let _ = Box::into_raw(ctx);
+                }
             }
             StreamEvent::SendComplete {
                 cancelled: _,
                 client_context,
             } => unsafe {
-                let _ = Box::from_raw(client_context as *mut Box<[u8]>);
+                let _ = Box::from_raw(client_context as *mut (Vec<u8>, Box<[BufferRef; 1]>));
             },
             StreamEvent::ShutdownComplete { .. } => {
                 // auto close
@@ -134,12 +144,13 @@ fn test_server_client() {
                     cancelled: _,
                     client_context,
                 } => {
-                    println!("client send complete");
-                    let _ = unsafe { Box::from_raw(client_context as *mut Box<[u8]>) };
+                    let _ = unsafe {
+                        Box::from_raw(client_context as *mut (Vec<u8>, Box<[BufferRef; 1]>))
+                    };
                 }
                 StreamEvent::Receive { buffers, .. } => {
                     let s = buffers_to_string(buffers);
-                    println!("client receive {s}");
+                    println!("Client stream receive: {s}");
                 }
                 StreamEvent::ShutdownComplete { .. } => {
                     let _ = unsafe { Stream::from_raw(stream.as_raw()) };
@@ -158,15 +169,19 @@ fn test_server_client() {
                         let mut s = Stream::new();
                         s.open(&conn, STREAM_OPEN_FLAG_NONE, stream_handler)?;
                         s.start(STREAM_START_FLAG_NONE)?;
-                        // TODO: seems like the BufferRef array needs to be heap allocated?
-                        let b = Box::new("hello".as_bytes().to_vec().into_boxed_slice());
-                        let b_ref = [BufferRef::from((*b).as_ref())];
-                        let ctx = Box::into_raw(b);
-                        println!("Client send");
-                        unsafe { s.send(&b_ref, SEND_FLAG_FIN, ctx as *const c_void) }
-                            .inspect_err(|_| {
-                                let _ = unsafe { Box::from_raw(ctx) };
-                            })?;
+                        // BufferRef needs to be heap allocated
+                        let b = "hello from client".as_bytes().to_vec();
+                        let b_ref = Box::new([BufferRef::from((*b).as_ref())]);
+                        let ctx = Box::new((b, b_ref));
+                        unsafe {
+                            s.send(
+                                ctx.1.as_slice(),
+                                SEND_FLAG_FIN,
+                                ctx.as_ref() as *const _ as *const c_void,
+                            )
+                        }?;
+                        // detach the buffer
+                        let _ = Box::into_raw(ctx);
                         // detach stream and let callback cleanup
                         unsafe { s.into_raw() };
                         Ok::<(), Status>(())
@@ -177,8 +192,7 @@ fn test_server_client() {
                     }
                 }
                 ConnectionEvent::ShutdownComplete { .. } => {
-                    // No need to close
-                    // unsafe { Connection::from_raw(conn.as_raw()) };
+                    // No need to close. Main function owns the handle.
                 }
                 _ => {}
             };
