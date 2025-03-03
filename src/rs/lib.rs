@@ -1088,9 +1088,12 @@ impl Connection {
 
     fn close_inner(&self) {
         if !self.handle.is_null() {
+            println!("Closing Connection.");
+            println!("Cleaning ctx1 {:?}.", self.get_context());
             unsafe {
                 Api::ffi_ref().ConnectionClose.unwrap()(self.handle);
             }
+            println!("Cleaning ctx {:?}.", self.get_context());
             self.clear_ctx_if_present();
         }
     }
@@ -1441,8 +1444,9 @@ mod tests {
     use std::ptr;
 
     use crate::{
-        BufferRef, Configuration, Connection, ConnectionEvent, ConnectionRef, CredentialConfig,
-        Registration, Settings, Status, Stream, StreamEvent, StreamRef,
+        BufferRef, Configuration, Connection, ConnectionCallback, ConnectionEvent, ConnectionRef,
+        CredentialConfig, Registration, Settings, Status, Stream, StreamEvent, StreamRef,
+        CONNECTION_SHUTDOWN_FLAG_NONE,
     };
 
     fn test_conn_callback(connection: ConnectionRef, event: ConnectionEvent) -> Result<(), Status> {
@@ -1602,6 +1606,8 @@ mod tests {
             "Failed to open connection: {}",
             res.err().unwrap()
         );
+        let ctx = connection.get_context();
+        println!("ctx1 {:?}", ctx);
 
         let res = connection.start(&configuration, "www.cloudflare.com", 443);
         assert!(
@@ -1628,6 +1634,9 @@ mod tests {
         let duration = std::time::Duration::from_millis(1000);
         std::thread::sleep(duration);
 
+        let ctx = connection.get_context();
+        println!("ctx2 {:?}", ctx);
+
         // check get stats ok
         {
             let stats = connection.get_stats().expect("fail to get stats");
@@ -1642,5 +1651,29 @@ mod tests {
             assert!(perf.conn_created > 0);
             assert!(perf.strm_active > 0);
         }
+        let ctx = connection.get_context();
+        println!("ctx3 {:?}", ctx);
+        let f = unsafe {
+            (ctx as *mut Box<ConnectionCallback>)
+                .as_mut() // allow mutation
+                .expect("cannot get ConnectionCallback from ctx")
+        };
+        connection.shutdown(CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+        let ctx = connection.get_context();
+        let f = unsafe {
+            (ctx as *mut Box<ConnectionCallback>)
+                .as_mut() // allow mutation
+                .expect("cannot get ConnectionCallback from ctx")
+        };
+        println!("ctx4 {:?}", ctx);
+        let ctx = connection.get_context();
+        let f = unsafe {
+            (ctx as *mut Box<ConnectionCallback>)
+                .as_mut() // allow mutation
+                .expect("cannot get ConnectionCallback from ctx")
+        };
+        //println!("{:?}",f.);
+        std::mem::drop(connection);
+        println!("ctx5 {:?}", ctx);
     }
 }
