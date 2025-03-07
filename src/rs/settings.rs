@@ -134,7 +134,6 @@ impl Settings {
     define_settings_entry_bitflag!(set_PacingEnabled);
     define_settings_entry_bitflag!(set_MigrationEnabled);
     define_settings_entry_bitflag!(set_DatagramReceiveEnabled);
-    // define_settings_entry_bitflag!(set_ServerResumptionLevel);
 
     pub fn set_ServerResumptionLevel(mut self, value: ServerResumptionLevel) -> Self {
         unsafe {

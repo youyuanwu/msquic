@@ -60,7 +60,8 @@ pub union Addr {
 
 impl Debug for Addr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Addr")
+        // TODO: implement Addr content debug string
+        write!(f, "Addr{{..}}")
     }
 }
 
