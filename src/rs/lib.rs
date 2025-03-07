@@ -12,6 +12,7 @@ use ffi::{HQUIC, QUIC_API_TABLE, QUIC_BUFFER, QUIC_CREDENTIAL_CONFIG, QUIC_SETTI
 use libc::c_void;
 use serde::{Deserialize, Serialize};
 use socket2::SockAddr;
+use std::fmt::Debug;
 use std::io;
 use std::mem;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -25,7 +26,7 @@ pub use error::{Status, StatusCode};
 mod types;
 pub use types::{BufferRef, ConnectionEvent, ListenerEvent, NewConnectionInfo, StreamEvent};
 mod settings;
-pub use settings::Settings;
+pub use settings::{ServerResumptionLevel, Settings};
 mod config;
 pub use config::{CredentialConfig, ExecutionProfile, RegistrationConfig};
 
@@ -55,6 +56,12 @@ pub const ADDRESS_FAMILY_INET6: AddressFamily = c_types::AF_INET6 as u16;
 pub union Addr {
     pub ipv4: sockaddr_in,
     pub ipv6: sockaddr_in6,
+}
+
+impl Debug for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Addr")
+    }
 }
 
 impl Addr {
@@ -154,12 +161,6 @@ pub const CERTIFICATE_HASH_STORE_FLAG_MACHINE_STORE: CertificateHashStoreFlags =
 pub type ConnectionShutdownFlags = u32;
 pub const CONNECTION_SHUTDOWN_FLAG_NONE: ConnectionShutdownFlags = 0;
 pub const CONNECTION_SHUTDOWN_FLAG_SILENT: ConnectionShutdownFlags = 1;
-
-/// Type of resumption behavior on the server side.
-pub type ServerResumptionLevel = u32;
-pub const SERVER_NO_RESUME: ServerResumptionLevel = 0;
-pub const SERVER_RESUME_ONLY: ServerResumptionLevel = 1;
-pub const SERVER_RESUME_AND_ZERORTT: ServerResumptionLevel = 2;
 
 /// Modifies the behavior when sending resumption data.
 pub type SendResumptionFlags = u32;
@@ -473,6 +474,7 @@ unsafe impl Sync for Configuration {}
 unsafe impl Send for Configuration {}
 
 /// A single QUIC connection.
+#[derive(Debug)]
 pub struct Connection {
     handle: HQUIC,
 }
@@ -480,6 +482,7 @@ unsafe impl Sync for Connection {}
 unsafe impl Send for Connection {}
 
 /// A single server listener
+#[derive(Debug)]
 pub struct Listener {
     handle: HQUIC,
 }
@@ -487,6 +490,7 @@ unsafe impl Sync for Listener {}
 unsafe impl Send for Listener {}
 
 /// A single QUIC stream on a parent connection.
+#[derive(Debug)]
 pub struct Stream {
     handle: HQUIC,
 }
@@ -756,6 +760,7 @@ macro_rules! define_quic_handle_ref {
         /// Same as the owned type but does not own the handle.
         /// Only used in callback wrapping where handle
         /// should not be closed by default.
+        #[derive(Debug)]
         pub struct $handle_ref_name($handle_name);
 
         impl $handle_ref_name {
@@ -1517,3 +1522,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod sc_tests;
