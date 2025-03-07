@@ -1523,5 +1523,7 @@ mod tests {
     }
 }
 
+// test certs are only installed on windows
+#[cfg(target_os = "windows")]
 #[cfg(test)]
-mod sc_tests;
+mod server_client_test;

@@ -15,14 +15,31 @@ use crate::{
 fn buffers_to_string(buffers: &[BufferRef]) -> String {
     let mut v = Vec::new();
     for b in buffers {
-        println!("debug bytes: {:?}", b.as_bytes());
         v.extend_from_slice(b.as_bytes());
     }
     String::from_utf8_lossy(v.as_slice()).to_string()
 }
 
+/// Use pwsh to get the test cert hash
+pub fn get_test_cert_hash() -> String {
+    let output = std::process::Command::new("pwsh.exe")
+        .args(["-Command", "Get-ChildItem Cert:\\CurrentUser\\My | Where-Object -Property FriendlyName -EQ -Value MsQuicTestServer | Select-Object -ExpandProperty Thumbprint -First 1"]).
+        output().expect("Failed to execute command");
+    assert!(output.status.success());
+    let mut s = String::from_utf8(output.stdout).unwrap();
+    if s.ends_with('\n') {
+        s.pop();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+    };
+    s
+}
+
 #[test]
 fn test_server_client() {
+    let cert_hash = get_test_cert_hash();
+
     let reg = Registration::new(&RegistrationConfig::default()).unwrap();
     let alpn = [BufferRef::from("qtest")];
     let settings = Settings::new()
@@ -34,7 +51,7 @@ fn test_server_client() {
     let cred_config = CredentialConfig::new()
         .set_credential_flags(CredentialFlags::NO_CERTIFICATE_VALIDATION)
         .set_credential(Credential::CertificateHash(
-            CertificateHash::from_str("C2A39CFE2613C56F66DCB8C074E7E50A8CE6F4D4").unwrap(),
+            CertificateHash::from_str(&cert_hash).unwrap(),
         ));
     config.load_credential(&cred_config).unwrap();
     let config = Arc::new(config);
@@ -43,7 +60,7 @@ fn test_server_client() {
     let (s_tx, s_rx) = std::sync::mpsc::channel::<String>();
 
     let stream_handler = move |stream: StreamRef, ev: StreamEvent| {
-        println!("Server stream: {ev:?}");
+        println!("Server stream event: {ev:?}");
         match ev {
             StreamEvent::Receive {
                 absolute_offset: _,
@@ -91,7 +108,7 @@ fn test_server_client() {
     };
 
     let conn_handler = move |conn: ConnectionRef, ev: ConnectionEvent| {
-        println!("Server Connection: {ev:?}");
+        println!("Server connection event: {ev:?}");
         match ev {
             crate::ConnectionEvent::PeerStreamStarted { stream, flags: _ } => {
                 stream.set_callback_handler(stream_handler.clone());
@@ -107,7 +124,7 @@ fn test_server_client() {
 
     let mut l = Listener::new();
     l.open(&reg, move |_, ev| {
-        println!("Listener event: {ev:?}");
+        println!("Server listener event: {ev:?}");
         match ev {
             crate::ListenerEvent::NewConnection {
                 info: _,
@@ -142,7 +159,7 @@ fn test_server_client() {
     let (c_tx, c_rx) = std::sync::mpsc::channel::<String>();
     {
         let stream_handler = move |stream: StreamRef, ev: StreamEvent| {
-            println!("Client stream: {ev:?}");
+            println!("Client stream event: {ev:?}");
             match ev {
                 StreamEvent::SendComplete {
                     cancelled: _,
@@ -166,7 +183,7 @@ fn test_server_client() {
         };
 
         let conn_handler = move |conn: ConnectionRef, ev: ConnectionEvent| {
-            println!("Client connection: {ev:?}");
+            println!("Client connection event: {ev:?}");
             match ev {
                 ConnectionEvent::Connected { .. } => {
                     // open stream and send
@@ -210,14 +227,13 @@ fn test_server_client() {
 
         conn.start(&client_config, "127.0.0.1", 4567).unwrap();
 
-        println!("waiting test finish");
         let server_s = s_rx
             .recv_timeout(std::time::Duration::from_secs(3))
-            .unwrap();
+            .expect("Server failed receive request.");
         assert_eq!(server_s, "hello from client");
         let client_s = c_rx
             .recv_timeout(std::time::Duration::from_secs(3))
-            .unwrap();
+            .expect("Client failed receive response.");
         assert_eq!(client_s, "hello from server");
     }
     l.stop();
