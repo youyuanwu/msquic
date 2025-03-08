@@ -28,7 +28,11 @@ pub use types::{BufferRef, ConnectionEvent, ListenerEvent, NewConnectionInfo, St
 mod settings;
 pub use settings::{ServerResumptionLevel, Settings};
 mod config;
-pub use config::{CredentialConfig, ExecutionProfile, RegistrationConfig};
+pub use config::{
+    AllowedCipherSuiteFlags, CertificatHashStoreFlags, CertificateFile, CertificateFileProtected,
+    CertificateHash, CertificateHashStore, CertificatePkcs12, Credential, CredentialConfig,
+    CredentialFlags, ExecutionProfile, RegistrationConfig,
+};
 
 //
 // The following starts the C interop layer of MsQuic API.
