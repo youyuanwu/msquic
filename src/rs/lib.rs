@@ -8,7 +8,7 @@ use c_types::AF_INET6;
 #[allow(unused_imports)]
 use c_types::AF_UNSPEC;
 use c_types::{sa_family_t, sockaddr_in, sockaddr_in6, socklen_t};
-use ffi::{HQUIC, QUIC_API_TABLE, QUIC_BUFFER, QUIC_CREDENTIAL_CONFIG, QUIC_SETTINGS, QUIC_STATUS};
+use ffi::{HQUIC, QUIC_BUFFER, QUIC_CREDENTIAL_CONFIG, QUIC_SETTINGS, QUIC_STATUS};
 use libc::c_void;
 use socket2::SockAddr;
 use std::fmt::Debug;
@@ -18,7 +18,6 @@ use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::option::Option;
 use std::ptr;
 use std::result::Result;
-use std::sync::Once;
 mod error;
 pub mod ffi;
 pub use error::{Status, StatusCode};
@@ -28,6 +27,7 @@ mod settings;
 pub use settings::{ServerResumptionLevel, Settings};
 mod config;
 pub use config::{CredentialConfig, ExecutionProfile, RegistrationConfig};
+mod api;
 
 //
 // The following starts the C interop layer of MsQuic API.
@@ -405,21 +405,9 @@ pub const PARAM_STREAM_0RTT_LENGTH: u32 = 0x08000001;
 pub const PARAM_STREAM_IDEAL_SEND_BUFFER_SIZE: u32 = 0x08000002;
 pub const PARAM_STREAM_PRIORITY: u32 = 0x08000003;
 
-#[link(name = "msquic")]
-unsafe extern "C" {
-    unsafe fn MsQuicOpenVersion(version: u32, api: *mut *const QUIC_API_TABLE) -> u32;
-    unsafe fn MsQuicClose(api: *const QUIC_API_TABLE);
-}
-
 //
 // The following starts the "nice" Rust API wrapper on the C interop layer.
 //
-
-//
-// APITABLE will be initialized via MsQuicOpenVersion() when we first initialize Api or Registration.
-//
-static mut APITABLE: *const QUIC_API_TABLE = ptr::null();
-static START_MSQUIC: Once = Once::new();
 
 /// Entry point for some global MsQuic APIs.
 pub struct Api {}
@@ -430,7 +418,7 @@ impl Api {
     /// i.e. get_ffi() has been called at least once before.
     #[inline]
     fn ffi_ref() -> &'static crate::ffi::QUIC_API_TABLE {
-        unsafe { APITABLE.as_ref().unwrap() }
+        unsafe { api::APITABLE.as_ref().unwrap() }
     }
 
     /// Returns the global ffi api table.
@@ -438,24 +426,8 @@ impl Api {
     /// Allows user to use the unsafe api table for functions not yet
     /// supported in the wrappers.
     pub fn get_ffi() -> &'static crate::ffi::QUIC_API_TABLE {
-        Api::once_init_api();
+        api::once_init_api();
         Api::ffi_ref()
-    }
-
-    /// Initializes the global static api table.
-    /// This is used in registration creation, or in user getting raw ffi.
-    fn once_init_api() {
-        // initialization is done exactly once.
-        unsafe {
-            START_MSQUIC.call_once(|| {
-                let mut table: *const QUIC_API_TABLE = ptr::null();
-                let status = MsQuicOpenVersion(2, std::ptr::addr_of_mut!(table));
-                if let Err(err) = Status::ok_from_raw(status as QUIC_STATUS) {
-                    panic!("Failed to open MsQuic: {}", err);
-                }
-                APITABLE = table;
-            });
-        }
     }
 }
 
@@ -658,16 +630,6 @@ impl Api {
                 context as *mut c_void,
             )
         };
-    }
-}
-
-#[ctor::dtor]
-fn close_msquic() {
-    unsafe {
-        if !APITABLE.is_null() {
-            MsQuicClose(APITABLE);
-            APITABLE = ptr::null();
-        }
     }
 }
 

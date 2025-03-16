@@ -1,11 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use cmake::Config;
-use std::env;
-use std::path::Path;
-
 fn main() {
+    #[cfg(not(feature = "load"))]
+    cmake_build();
+
+    #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
+    overwrite_bindgen();
+}
+
+#[cfg(not(feature = "load"))]
+fn cmake_build() {
+    use cmake::Config;
+    use std::env;
+    use std::path::Path;
+
     let path_extra = "lib";
     let mut logging_enabled = "off";
     if cfg!(windows) {
@@ -15,7 +24,7 @@ fn main() {
     let target = env::var("TARGET").unwrap();
     let out_dir = env::var("OUT_DIR").unwrap();
     // The output directory for the native MsQuic library.
-    let quic_output_dir = Path::new(&out_dir).join("lib");
+    let quic_output_dir = std::path::Path::new(&out_dir).join("lib");
 
     // Builds the native MsQuic and installs it into $OUT_DIR.
     let mut config = Config::new(".");
@@ -65,9 +74,6 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=static=msquic");
     }
-
-    #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
-    overwrite_bindgen();
 }
 
 /// Read the c header and generate rust bindings.
