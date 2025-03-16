@@ -48,7 +48,7 @@ include = [
 path = "src/rs/lib.rs"
 
 [features]
-# default = ["load"]
+default = ["load"]
 # Windows uses schannel, and linux uses openssl by default. 
 # This feature enables openssl on windows, and has no effect on linux.
 openssl = []

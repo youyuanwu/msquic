@@ -108,3 +108,13 @@ In the end, your c_cpp_properties.json file (in the .vscode folder) should look 
     "version": 4
 }
 ```
+
+## Rust
+For testing `load` feature, msquic lib on windows needs to be in PATH variable.
+```ps1
+# modify the path
+$MSQUIC_LIB_DIR=Get-ChildItem -Path ./target/ -Filter msquic.dll -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
+$env:PATH = "$MSQUIC_LIB_DIR;$env:PATH"
+# run test
+cargo test --features load
+```

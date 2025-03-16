@@ -74,24 +74,6 @@ fn cmake_build() {
         }
         println!("cargo:rustc-link-lib=static=msquic");
     }
-
-    // copy shared lib to deps dir for running tests.
-    #[cfg(test)]
-    if !cfg!(feature = "static") {
-        let lib_name = "msquic.dll";
-        let lib_src = dst.join("bin").join(lib_name);
-        // find dir target/<debug|release>/deps
-        let deps_dst = dst
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("deps")
-            .join(lib_name);
-        std::fs::copy(lib_src, deps_dst).expect("cannot copy");
-    }
 }
 
 /// Read the c header and generate rust bindings.
