@@ -80,6 +80,7 @@ fn cmake_build() {
 /// TODO: macos currently uses linux bindings.
 #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
 fn overwrite_bindgen() {
+    use std::env;
     let manifest_dir = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let root_dir = manifest_dir;
     // include msquic headers

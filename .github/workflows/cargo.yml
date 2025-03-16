@@ -54,7 +54,7 @@ jobs:
     - name: Cargo test
       run: cargo test --all ${{ matrix.features }}
     - name: Cargo test feature load
-      if: runner.os == 'Windows' && ${{ matrix.features == '' }}
+      if:  ${{ runner.os == 'Windows' && matrix.features == '' }}
       run: |
         $MSQUIC_LIB_DIR=Get-ChildItem -Path ./target/ -Filter msquic.dll -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
         $env:PATH = "$MSQUIC_LIB_DIR;$env:PATH"
