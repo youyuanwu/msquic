@@ -33,11 +33,11 @@ pub(crate) fn once_init_api() {
 mod global_fn {
     #[link(name = "msquic")]
     unsafe extern "C" {
-        unsafe fn MsQuicOpenVersion(
+        pub(crate) unsafe fn MsQuicOpenVersion(
             version: u32,
             api: *mut *const crate::ffi::QUIC_API_TABLE,
         ) -> u32;
-        unsafe fn MsQuicClose(api: *const crate::ffi::QUIC_API_TABLE);
+        pub(crate) unsafe fn MsQuicClose(api: *const crate::ffi::QUIC_API_TABLE);
     }
 }
 
@@ -93,7 +93,7 @@ mod global_fn {
 
     /// unload the lib from the process.
     pub(crate) fn uninit_global() {
-        // unsafe { LIB = None };
+        unsafe { LIB = None };
     }
 }
 
