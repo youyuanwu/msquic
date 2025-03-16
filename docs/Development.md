@@ -110,11 +110,21 @@ In the end, your c_cpp_properties.json file (in the .vscode folder) should look 
 ```
 
 ## Rust
-For testing `load` feature, msquic lib on windows needs to be in PATH variable.
+For testing `load` feature, tests needs to be able to load msquic lib dynamically.
+After build rust and c from src without `load` feature, msquic lib should be in ./target dir,
+and we need to do manual steps so that `load` can find it.
+* Windows: dll needs to be in PATH variable.
 ```ps1
-# modify the path
+# set the path var so that lib can be loaded.
 $MSQUIC_LIB_DIR=Get-ChildItem -Path ./target/ -Filter msquic.dll -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
 $env:PATH = "$MSQUIC_LIB_DIR;$env:PATH"
+# run test
+cargo test --features load
+```
+* Linux: shared lib file needs to be in LD_LIBRARY_PATH variable before executable launch.
+```sh
+# set var so that lib can be loaded.
+LD_LIBRARY_PATH=$(find ./target -name "libmsquic.so" -exec realpath {} \; | xargs dirname)
 # run test
 cargo test --features load
 ```
