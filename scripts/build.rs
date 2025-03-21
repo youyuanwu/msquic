@@ -1,11 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use cmake::Config;
-use std::env;
-use std::path::Path;
-
 fn main() {
+    if cfg!(feature = "static") {
+        assert!(cfg!(feature = "src"), "static requires build for src");
+    }
+    #[cfg(feature = "src")]
+    cmake_build();
+
+    #[cfg(feature = "find")]
+    find();
+
+    #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
+    overwrite_bindgen();
+}
+
+#[cfg(feature = "src")]
+fn cmake_build() {
+    use cmake::Config;
+    use std::env;
+    use std::path::Path;
     let path_extra = "lib";
     let mut logging_enabled = "off";
     if cfg!(windows) {
@@ -65,16 +79,39 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=static=msquic");
     }
+}
 
-    #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
-    overwrite_bindgen();
+#[cfg(all(feature = "find", target_os = "windows"))]
+fn find() {
+    // msquic only supports dynamic link in vcpkg.
+    std::env::set_var("VCPKGRS_DYNAMIC", "1");
+    vcpkg::Config::new()
+        .emit_includes(true)
+        .copy_dlls(true)
+        .find_package("msquic")
+        .unwrap();
+}
+
+#[cfg(all(feature = "find", not(target_os = "windows")))]
+fn find() {
+    // TODO: msquic pkg should support pkg-config.
+    // output linux file location
+
+    // Need to create symlink manually.
+    // ln -s /usr/lib/x86_64-linux-gnu/libmsquic.so.2 /usr/lib/x86_64-linux-gnu/libmsquic.so
+    let lib = "libmsquic.so";
+    let lib_path = "/usr/lib/x86_64-linux-gnu";
+    if !std::path::PathBuf::from(lib_path).join(lib).exists() {
+        panic!("msquic is not found.");
+    }
+    println!("cargo:rustc-link-search=native={}", lib_path);
 }
 
 /// Read the c header and generate rust bindings.
 /// TODO: macos currently uses linux bindings.
 #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
 fn overwrite_bindgen() {
-    let manifest_dir = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let root_dir = manifest_dir;
     // include msquic headers
     let inc_dir = root_dir.join("src").join("inc");
