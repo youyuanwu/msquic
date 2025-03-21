@@ -84,17 +84,50 @@ fn cmake_build() {
 /// Lookup preinstalled msquic lib in vcpkg,
 /// copy libs to crate outdir so that tests can run.
 fn vcpkg() {
+    struct LibFiles {
+        pub lib_dir: &'static str,
+        pub lib_names: Vec<&'static str>,
+    }
     let vcpkg_dir = std::env::var("VCPKG_ROOT").expect("VCPKG_ROOT env not set");
-    let lib_dir = std::path::PathBuf::from(vcpkg_dir)
+    let (triplet, lib_files) = if cfg!(target_os = "windows") {
+        (
+            "x64-windows",
+            vec![
+                LibFiles {
+                    lib_dir: "bin",
+                    lib_names: vec!["msquic.dll", "msquic.pdb"],
+                },
+                LibFiles {
+                    lib_dir: "lib",
+                    lib_names: vec!["msquic.lib"],
+                },
+            ],
+        )
+    } else if cfg!(target_os = "linux") {
+        (
+            "x64-linux",
+            vec![LibFiles {
+                lib_dir: "lib",
+                lib_names: vec!["libmsquic.so", "libmsquic.so.2"],
+            }],
+        )
+    } else {
+        panic!("target_os not supported for vcpkg");
+    };
+    let triplet_dir = std::path::PathBuf::from(vcpkg_dir)
         .join("installed")
-        .join("x64-linux")
-        .join("lib");
-    // copy all libs that required to run tests into the out dir
-    let lib_name = "libmsquic.so";
-    let lib_name2 = "libmsquic.so.2";
+        .join(triplet);
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    std::fs::copy(lib_dir.join(lib_name), out_dir.join(lib_name)).unwrap();
-    std::fs::copy(lib_dir.join(lib_name2), out_dir.join(lib_name2)).unwrap();
+    // copy all libs that required to run tests into the out dir
+    for lib_file in lib_files {
+        for lib_name in lib_file.lib_names {
+            std::fs::copy(
+                triplet_dir.join(lib_file.lib_dir).join(lib_name),
+                out_dir.join(lib_name),
+            )
+            .unwrap();
+        }
+    }
     println!("cargo:rustc-link-search=native={}", out_dir.display());
 }
 
