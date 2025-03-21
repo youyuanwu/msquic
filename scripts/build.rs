@@ -8,8 +8,8 @@ fn main() {
     #[cfg(feature = "src")]
     cmake_build();
 
-    #[cfg(feature = "find")]
-    find();
+    #[cfg(feature = "vcpkg")]
+    vcpkg();
 
     #[cfg(all(feature = "overwrite", not(target_os = "macos")))]
     overwrite_bindgen();
@@ -81,30 +81,21 @@ fn cmake_build() {
     }
 }
 
-#[cfg(all(feature = "find", target_os = "windows"))]
-fn find() {
-    // msquic only supports dynamic link in vcpkg.
-    std::env::set_var("VCPKGRS_DYNAMIC", "1");
-    vcpkg::Config::new()
-        .emit_includes(true)
-        .copy_dlls(true)
-        .find_package("msquic")
-        .unwrap();
-}
-
-#[cfg(all(feature = "find", not(target_os = "windows")))]
-fn find() {
-    // TODO: msquic pkg should support pkg-config.
-    // output linux file location
-
-    // Need to create symlink manually.
-    // ln -s /usr/lib/x86_64-linux-gnu/libmsquic.so.2 /usr/lib/x86_64-linux-gnu/libmsquic.so
-    let lib = "libmsquic.so";
-    let lib_path = "/usr/lib/x86_64-linux-gnu";
-    if !std::path::PathBuf::from(lib_path).join(lib).exists() {
-        panic!("msquic is not found.");
-    }
-    println!("cargo:rustc-link-search=native={}", lib_path);
+/// Lookup preinstalled msquic lib in vcpkg,
+/// copy libs to crate outdir so that tests can run.
+fn vcpkg() {
+    let vcpkg_dir = std::env::var("VCPKG_ROOT").expect("VCPKG_ROOT env not set");
+    let lib_dir = std::path::PathBuf::from(vcpkg_dir)
+        .join("installed")
+        .join("x64-linux")
+        .join("lib");
+    // copy all libs that required to run tests into the out dir
+    let lib_name = "libmsquic.so";
+    let lib_name2 = "libmsquic.so.2";
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    std::fs::copy(lib_dir.join(lib_name), out_dir.join(lib_name)).unwrap();
+    std::fs::copy(lib_dir.join(lib_name2), out_dir.join(lib_name2)).unwrap();
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
 }
 
 /// Read the c header and generate rust bindings.
